@@ -1,43 +1,43 @@
-redis cluster��Ⱥ��������4����
-1.׼���ڵ㣨docker-compose ���Ź���redis���ӽڵ㣩
+redis cluster集群构建流程4部：
+1.准备节点（docker-compose 编排构建redis主从节点）
 
-2.�ڵ����֣�ͨ��Gssip[����Э��]���֣�-->��cluster meet IP port-->cluster meet 192.168.1.9 6391��-->(redis-cli�ͻ���ִ��)
+2.节点握手（通过Gssip[流言协议]握手）-->（cluster meet IP port-->cluster meet 192.168.1.9 6391）-->(redis-cli客户端执行)
 
-3.���ýڵ�����ӹ�ϵ(redis-cli -h ip port[�ӽڵ�˿�] cluster replicate ���ڵ�id)(redis-cli -h 192.168.1.9 6394 cluster replicate fe74467be98b)
+3.配置节点的主从关系(redis-cli -h ip port[从节点端口] cluster replicate 主节点id)(redis-cli -h 192.168.1.9 6394 cluster replicate fe74467be98b)
 
-4.Ϊ���ڵ����ۣ�redis-cli -h 192.168.1.9  -p 6391[���ڵ�˿�]  cluster addslots {0..5461}��
+4.为主节点分配槽（redis-cli -h 192.168.1.9  -p 6391[主节点端口]  cluster addslots {0..5461}）
 
 ====================================================
 
-����Ŀ¼
+创建目录
 [root@localhost ~]# mkdir -p /usr/local/docker-compose-redis-trib 
 [root@localhost ~]# cd /usr/local/docker-compose-redis-trib
 
-1.����redis����=====================
+1.构建redis镜像=====================
 [root@localhost docker-compose-redis-trib]# docker build -t rediscluster .
 
 
 
-2.docom-composeִ�б���=============
+2.docom-compose执行编排=============
 
-1.����
+1.构建
 [root@localhost docker-compose-redis-trib]# docker-compose up -d
 
-2.�鿴����������
+2.查看构建容器：
 [root@localhost docker-compose-redis-trib]# docker-compose ps
 
-3.����������
+3.进入容器：
 [root@localhost docker-compose-redis-trib]# docker exec -it redis-slave1 bash
 
-4.����redis-slave����redis-trib�redis cluster��Ⱥ��
-ʹ�� redis-trib.rb create ������ɽڵ����ֺͲ۷������
---replicas ����ָ����Ⱥ��ÿ�����ڵ��䱸�����ӽڵ㣬��������Ϊ1��redis-trib.rb �ᾡ���ܱ�֤���ӽڵ㲻������ͬһ�����£���˻���������ڵ��б�˳�򡣽ڵ��б�˳������ȷ�����ӽ�ɫ�������ڵ�֮���Ǵӽڵ㡣�������������Ȼ�������ӽڵ��ɫ����ļƻ������һ����ɱ���
-[root@67b9fea495ed config]# redis-trib.rb create --replicas 192.168.1.9:6391 192.168.1.9:6392 192.168.1.9:63913 192.168.1.9:6394 192.168.1.9:6395 192.168.1.9:6396  
+4.进入redis-slave利用redis-trib搭建redis cluster集群：
+使用 redis-trib.rb create 命令完成节点握手和槽分配过程
+--replicas 参数指定集群中每个主节点配备几个从节点，这里设置为1，redis-trib.rb 会尽可能保证主从节点不分配在同一机器下，因此会重新排序节点列表顺序。节点列表顺序用于确定主从角色，先主节点之后是从节点。创建过程中首先会给出主从节点角色分配的计划，并且会生成报告
+[root@67b9fea495ed config]# redis-trib.rb create --replicas 192.168.1.9:6391 192.168.1.9:6392 192.168.1.9:6393 192.168.1.9:6394 192.168.1.9:6395 192.168.1.9:6396  
 
 
 
-5.CLUSTER nodes���г���Ⱥ��ǰ��֪�����нڵ㣨node���������Ϣ
-��ʱ�ڵ���ڵ�֮���Ѿ�������֣�ͬʱҲ���ú����ӹ�ϵ���Լ�����ò�
+5.CLUSTER nodes：列出集群当前已知的所有节点（node）的相关信息
+此时节点与节点之间已经完成握手，同时也配置好主从关系，以及分配好槽
 [root@67b9fea495ed config]# redis-cli -p 6394
 127.0.0.1:6394> cluster nodes
 9292e93a4154a22b687849db479fa6b1a68d19c1 172.30.0.1:6392@16392 master - 0 1574693537000 2 connected 5462-10922
@@ -49,33 +49,33 @@ d14924fb04a16ceda18c5ef13468828f7b853764 172.30.0.1:6395@16395 slave 9292e93a415
 
 
 
-6.����/var/lib/redis�鿴�����ļ�������Ψһ��ʶ��Ⱥ��һ���ڵ�ID
-�������ļ���:nodes-6379.conf
+6.进入/var/lib/redis查看配置文件或用于唯一标识集群内一个节点ID
+生产的文件是:nodes-6379.conf
 
 
-7.����redisִ��set������û��ָ����Ⱥģʽ����
+7.操作redis执行set操作【没有指定集群模式】：
 
 
-��redis-master1 6391 ִ��set����
+在redis-master1 6391 执行set操作
 127.0.0.1:6391> set name 111
-(error) MOVED 5798 172.50.0.1:6392--����ʾ��key��Ҫ�洢��5798�Ĳ���
+(error) MOVED 5798 172.50.0.1:6392--》提示该key需要存储到5798的槽中
 127.0.0.1:6391> get name
 (error) MOVED 5798 172.50.0.1:6392
 127.0.0.1:6391> 
-����ʾ��key��Ҫ��6392�Ľڵ�ִ�в�����
+【提示该key需要到6392的节点执行操作】
 
-��redis-master2 6392 ִ��set����
+在redis-master2 6392 执行set操作
 127.0.0.1:6392> set name 111
 OK
 127.0.0.1:6392> get name
 "111"
-��name��Ϣֻ����6392�Ľڵ���ܲ�����
+【name信息只有在6392的节点才能操作】
 
-set��get�������õ�ָ���Ĳ��в�������Ȼkey�޷�ִ��set��get����
-��˵�������ݲ���һ��Ҫ������Ӧ�Ĳ���ִ�����ݲ���Ĳ�����
+set，get操作都得到指定的槽中操作，不然key无法执行set，get操作
+【说明：数据插入一定要到到对应的槽区执行数据插入的操作】
 
 
-11.��Ⱥģʽ�»�ȡ���ݣ�
+11.集群模式下获取数据：
 
 [root@d8b6958531ad redis]# redis-cli -c -h 192.168.1.9 -p 6391 set name 123456
 OK
@@ -88,7 +88,7 @@ OK
 [root@d8b6958531ad redis]# redis-cli -c -h 192.168.1.9 -p 6391 get nameof     
 "1111"
 
-��ע�⣺��Ⱥģʽ�µĲ�������ָ������Ӧ�Ĳ۽ڵ�ִ�����ݲ�����
+【注意：集群模式下的操作无需指定到对应的槽节点执行数据操作】
 
 
 
