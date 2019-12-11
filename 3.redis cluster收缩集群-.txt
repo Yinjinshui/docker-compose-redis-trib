@@ -1,0 +1,100 @@
+收缩集群意味着缩减规模，需要从现有集群中安全下线部分节点，下线节点过程如下
+1）首先需要确定下线节点是否有负责的槽，如果是，需要把槽迁移到其他节点，保证节点下线后整个集群槽节点映射的完整性。
+
+2）当下线节点不再负责槽或者本身是从节点时，就可以通知集群内其他节点忘记下线节点，当所有的节点忘记该节点后可以正常关闭。
+
+===========================
+1、下线迁移槽【此处要下线 192.168.1.9:6397 -》redis-master4 主节点】
+
+下线节点需要把自己负责的槽迁移到其他节点，原理与之前节点扩容的迁移槽过程一致，
+但是过程收缩正好和扩容迁移方向相反，下线节点变为源节点，其他主节点变为目标节点，
+源节点需要把自身负责的4096个槽均匀地迁移到其他主节点上。
+
+目标节点：需要迁入操的节点
+源节点：迁出槽的节点
+
+使用 redis-trib.rb reshard 命令完成槽迁移。由于每次执行 reshard 命令只能有一个目标节点，
+因此需要执行3次 reshard 命令
+
+进入集群某一节点：
+进入redis-slave1：
+[root@localhost docker-compose-redis-trib]# docker exec -it redis-slave1 bash
+
+
+
+
+
+2.执行槽的迁移(输入集群中任意节点)
+1>
+[root@67b9fea495ed config]# redis-trib.rb reshard 192.168.1.9.6394
+ 
+2>迁移槽的数量（次数一次性迁移完槽的数量）--》(原因是下线迁移如果涉及的节点很多，需要重复操作下线迁移槽)
+How mang slots do you want to move (from 1 to 16384)? 4096
+
+2>输入某个节点的节点 ID 作为目标节点，目标节点只能指定一个：[目标节点指的是需要添加槽的节点]
+What is the receiving node ID？ d9e7f06869e8ade7acea87c1241094525154fb78 --》（代表6391的集群Id）[目标节点]
+
+3>输入需要分配出槽的节点ID（/var/lib/redis查看配置文件或用于唯一标识集群内一个节点ID）
+Source node #1:f6258f82ff53b4f2ee2b07f583fc4216aae6397c --》（代表6397的集群Id）[源节点]
+Source node #2: done -->(输入done表示执行迁移)
+
+
+
+
+3.此时等待操作的迁移完成，然后执行cluster 
+[root@67b9fea495ed config]# redis-cli -p 6394
+127.0.0.1:6394> cluster nodes
+此时看到6397节点经是没有槽
+
+
+
+
+
+4.执行节点的忘记
+由于集群内的节点不停地通过 Gossip 消息彼此交换节点状态，因此需要通过一种健壮的机制让集群内所有节点忘记下线的节点。
+也就是说让其他节点不再与要下线节点进行 Gossip 消息交换。
+Redis 提供了 cluster forget{downNodeId}命令实现该功能，会把这个节点信息放入黑名单，但是60s之后会恢复。
+
+生产环境当中使用redis-trib.rb del-node {host：port}{downNodeId}命令进行相关操作
+
+#从集群中删除节点
+del-node        host:port node_id
+
+[root@67b9fea495ed config]# redis-trib.rb del-note 192.168.1.9:6391 f6258f82ff53b4f2ee2b07f583fc4216aae6397c   --》（代表6397的集群Id）[源节点]
+
+[root@67b9fea495ed config]# redis-trib.rb del-note 192.168.1.9:6391 f6258f82ff53b4f2ee2b07f583fc4216aae6398c   --》（代表6398的集群Id）[源节点]
+
+
+查看集群的节点：
+[root@67b9fea495ed config]# redis-cli -p 6394
+127.0.0.1:6394> cluster nodes
+此时看到6397节点经是没有槽
+
+
+
+
+
+
+5.此时执行集群节点槽的平衡
+注意： redis-trib  rebalance 命令选择
+适用于节点的槽不平衡的状态，有槽的节点
+1、默认节点加入，要先做节点槽的迁移
+2、节点已经迁移了所有的槽信息，并且已经从集群删除后，才可以使用平衡
+
+#平衡集群节点slot数量  
+rebalance       host:port
+                  --weight <arg>
+                  --auto-weights
+                  --use-empty-masters
+                  --timeout <arg>
+                  --simulate 不会真正迁移，测试用的
+                  --pipeline <arg> 一次迁移多少分数据
+                  --threshold <arg>
+				  
+				  
+[root@67b9fea495ed config]# redis-trib.rb rebalance 192.168.1.9:6391 	--->此时会自动平衡各个几点之间槽的数量
+
+平衡完之后可以查看个节点的槽数量
+[root@67b9fea495ed config]# redis-cli -p 6394
+127.0.0.1:6394> cluster nodes		  
+				  

@@ -1,0 +1,90 @@
+扩容操作
+扩容是分布式存储最常见的需求，Redis 集群扩容操作可分为如下步骤：
+1）准备新节点。
+2）将节点加入集群。
+3）迁移槽和数据。
+
+===================
+1.在宿主机上执行docker命令
+
+创建redis-master4:
+[root@localhost docker-compose-redis-trib]# docker run -itd --name redis-master4 -v $PWD/config:/config --net docker-compose-redis-trib_redis-master -e PORT=6397 -p 6397:6397 -p 16379:16379 --ip 172.50.0.5 rediscluster
+
+创建redis-slave4:
+[root@localhost ddocker-compose-redis-trib]# docker run -itd --name redis-slave4 -v $PWD/config:/config --net docker-compose-redis-trib_redis-slave -e PORT=6378 -p 6398:6378 -p 16398:16398 --ip 172.30.0.5 rediscluster
+
+
+
+2.进入redis-master4：
+[root@localhost docker-compose-redis-trib]# docker exec -it redis-master4 bash
+
+
+
+3.执行将节点加入集群：
+demo： 
+通过redis-trib.rb add-node  127.0.0.1:6397  127.0.0.1:6391 实现节点添加
+							要加入的节点  	集群中的节点
+							
+[root@67b9fea345ed config]# redis-trib.rb add-note 192.168.1.9:6397 192.168.1.9:6391
+[root@67b9fea345ed config]# redis-trib.rb add-note 192.168.1.9:6398 192.168.1.9:6391
+
+
+
+4.迁移槽和数据
+加入集群后需要为新节点迁移槽和相关数据，槽在迁移过程中集群可以正常提供读写服务，迁移过程是集群扩容最核心的环节，下面详细讲解。
+
+槽是 Redis 集群管理数据的基本单位，首先需要为新节点制定槽的迁移计划，确定原有节点的哪些槽需要迁移到新节点。
+迁移计划需要确保每个节点负责相似数量的槽，从而保证各节点的数据均匀，比如之前是三个节点，现在是四个节点，把节点槽分布在四个节点上。
+
+数据迁移过程是逐个槽进行的
+流程说明：
+1）对目标节点发送导入命令，让目标节点准备导入槽的数据。
+2）对源节点发送导出命令，让源节点准备迁出槽的数据。
+3）源节点循环执行迁移命令，将槽跟数据迁移到目标节点。
+
+
+方式1：
+1>输入迁移操作的集群
+[root@67b9fea345ed config]# redis-trib.rb reshard 192.168.1.9:6391
+
+2>输入某个节点的节点 ID 作为目标节点，目标节点只能指定一个：[目标节点指的是需要添加槽的节点]
+What is the receiving node ID？ f6258f82ff53b4f2ee2b07f583fc4216aae6397c --》（代表6397的集群Id）[目标节点]
+
+3>输入需要分配出槽的节点ID（/var/lib/redis查看配置文件或用于唯一标识集群内一个节点ID）
+Source node #1: 9292e93a4154a22b687849db479fa6b1a68d19c1 -->(6392的集群节点ID) [源节点]
+Source node #2: d9e7f06869e8ade7acea87c1241094525154fb78 -->(6391的集群节点ID) [源节点]
+Source node #3: 5cd14eb016dc49374092da300742fc8a4ab85018 -->(6393的集群节点ID) [源节点]
+Source node #3: done -->(输入done表示执行迁移)
+
+
+方式2：一步执行
+redis-trib.rb reshard host:port --from <arg> --to <arg> --slots <arg> --yes --timeout <arg> --pipeline <arg>
+参数说明：
+·host：port：必传参数，集群内任意节点地址，用来获取整个集群信息。
+·--from：制定源节点的 id，如果有多个源节点，使用逗号分隔，如果是all源节点变为集群内所有主节点，在迁移过程中提示用户输入。
+·--to：需要迁移的目标节点的id，目标节点只能填写一个，在迁移过程中提示用户输入。
+·--slots：需要迁移槽的总数量，在迁移过程中提示用户输入。
+·--yes：当打印出 reshard 执行计划时，是否需要用户输入yes确认后再执行 reshard。
+·--timeout：控制每次 migrate 操作的超时时间，默认为60000毫秒。
+·--pipeline：控制每次批量迁移键的数量，默认为10。
+
+[root@67b9fea345ed config]# redis-trib.rb reshard 192.168.1.9:6391 --from 9292e93a4154a22b687849db479fa6b1a68d19c1,d9e7f06869e8ade7acea87c1241094525154fb78,5cd14eb016dc49374092da300742fc8a4ab85018 --to f6258f82ff53b4f2ee2b07f583fc4216aae6397c --yes
+(该命令就会执行操的迁移)
+
+
+
+
+5.迁移好槽之后需要分配从节点
+扩容之初我们把6397、6398节点加入到集群，节点6397迁移了部分槽和数据作为主节点，
+但相比其他主节点目前还没有从节点，因此该节点不具备故障转移的能力。
+
+这时需要把节点6398作为6397的从节点，从而保证整个集群的高可用。使用 cluster replicate{masterNodeId}命令为主节点添加对应从节点
+
+进入redis-slave4节点（将192.168.1.9:6398设置成从节点）：
+[root@localhost docker-compose-redis-trib]# docker exec -it redis-slave4 bash
+[root@67b9fea36398 config]# redis-cli -p 6398
+127.0.0.1:6398> cluster replicate f6258f82ff53b4f2ee2b07f583fc4216aae6397c --》（代表6397的集群Id）
+
+
+6.此时节点，数据槽，主从关系都配置好，可以执行查看节点操作
+127.0.0.1:6398> cluster nodes
